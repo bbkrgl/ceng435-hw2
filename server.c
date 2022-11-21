@@ -89,8 +89,8 @@ int main(int argc, char *argv[])
 		log_print(ERROR, "Cannot initialize socket");
 	log_print(LOG, "Socket at port %s initialized", server_port);
 
-	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes,
-		       sizeof(uint32_t)) == -1)
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) ==
+	    -1)
 		log_print(ERROR, "Cannot configure socket");
 	log_print(LOG, "Socket configured");
 
