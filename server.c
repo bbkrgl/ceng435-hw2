@@ -7,21 +7,60 @@ char INBUFFER[BUFFER_SIZE];
 char OUTBUFFER[BUFFER_SIZE];
 
 int sockfd = -1;
+int terminate = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+struct connection_t *curr_conn = 0;
 
 void *flush_buffer(void *args)
 {
 	struct connection_t *conn = (struct connection_t *)args;
 	log_print(LOG, "Thread %d created, waiting for turn", conn->id);
 
-	pthread_mutex_lock(&mutex);
-	pthread_cond_wait(&conn->cond, &mutex);
-	pthread_mutex_unlock(&mutex);
+	while (terminate < 2) {
+		pthread_mutex_lock(&mutex);
+		pthread_cond_wait(&conn->cond, &mutex);
+		pthread_mutex_unlock(&mutex);
 
-	log_print(LOG, "Thread %d sending the message in buffer");
+		log_print(LOG, "Thread %d sending the message %s in buffer",
+			  conn->id, OUTBUFFER);
+		int bytes_sent = 0;
+		if ((bytes_sent = sendto(sockfd, OUTBUFFER, strlen(OUTBUFFER),
+					 0, &conn->target_addr,
+					 conn->target_addr_len)) == -1)
+			log_print(ERROR, "Cannot send packages");
+		log_print(LOG, "Sent %d bytes to server", bytes_sent);
+	}
 
 	pthread_exit(0);
+}
+
+void *read_input(void *args)
+{
+	char *line = 0;
+	size_t line_len = 0;
+	while (terminate < 2) {
+		int num_read = getline(&line, &line_len, stdin);
+		if (!strcmp(line, "\n")) {
+			terminate++;
+		} else {
+			if (!curr_conn) {
+				log_print(LOG, "No connections exists");
+				continue;
+			}
+
+			memcpy(OUTBUFFER, line, line_len);
+
+			pthread_mutex_lock(&mutex);
+			pthread_cond_signal(&curr_conn->cond);
+			pthread_mutex_unlock(&mutex);
+
+			terminate = 0;
+		}
+	}
+
+	free(line);
+	pthread_exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[])
@@ -37,7 +76,7 @@ int main(int argc, char *argv[])
 	struct addrinfo *res;
 
 	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
+	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_DGRAM;
 	hints.ai_flags = AI_PASSIVE;
 
@@ -61,10 +100,14 @@ int main(int argc, char *argv[])
 	}
 	freeaddrinfo(res);
 
+	int err = 0;
+	pthread_t line_read_thread;
+	pthread_create(&line_read_thread, 0, &read_input, 0);
+
 	struct connection_t *conn_list_head = 0;
 	struct connection_t *last_conn = 0;
 	log_print(LOG, "Socket binded and listening for connections");
-	while (1) {
+	while (terminate < 2) {
 		memset(INBUFFER, 0, sizeof(INBUFFER));
 
 		struct sockaddr_storage client_addr;
@@ -87,7 +130,7 @@ int main(int argc, char *argv[])
 			log_print(LOG, "New connection added");
 
 			if (!conn_list_head)
-				conn_list_head = last_conn;
+				conn_list_head = curr_conn = last_conn;
 
 			int err = 0;
 			if ((err = pthread_create(&last_conn->thread_id, 0,

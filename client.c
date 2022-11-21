@@ -9,7 +9,7 @@ int terminate = 0;
 
 void *read_input(void *args)
 {
-	struct addrinfo *target = (struct addrinfo *)args;
+	struct addrinfo *target = *((struct addrinfo **)args);
 
 	char *line = 0;
 	size_t line_len = 0;
@@ -19,9 +19,12 @@ void *read_input(void *args)
 			terminate++;
 		} else {
 			terminate = 0;
-			sendto(sockfd, line, num_read, 0, target->ai_addr,
-			       target->ai_addrlen);
-			log_print(LOG, "Sent %d bytes to server", num_read);
+			int bytes_sent = 0;
+			if ((bytes_sent = sendto(sockfd, line, num_read, 0,
+						 target->ai_addr,
+						 target->ai_addrlen)) == -1)
+				log_print(ERROR, "Cannot send packages");
+			log_print(LOG, "Sent %d bytes to server", bytes_sent);
 		}
 	}
 
@@ -44,9 +47,8 @@ int main(int argc, char *argv[])
 	struct addrinfo *res;
 
 	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
+	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_flags = AI_PASSIVE;
 
 	if (getaddrinfo(server_ip, server_port, &hints, &res) == -1)
 		log_print(ERROR, "Cannot get %s:%s info", server_ip,
@@ -63,15 +65,9 @@ int main(int argc, char *argv[])
 		log_print(ERROR, "Cannot configure socket");
 	log_print(LOG, "Socket configured");
 
-	if (bind(sockfd, res->ai_addr, res->ai_addrlen) == -1) {
-		close(sockfd);
-		log_print(ERROR, "Cannot bind to port");
-	}
-
 	int err = 0;
 	pthread_t line_read_thread;
-	pthread_create(&line_read_thread, 0, &read_input, res);
-	read_input(res);
+	pthread_create(&line_read_thread, 0, &read_input, &res);
 
 	while (terminate < 2) {
 		memset(INBUFFER, 0, sizeof(INBUFFER));
