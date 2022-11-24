@@ -166,8 +166,10 @@ int main(int argc, char *argv[])
 		}
 
 		if (conn->exp_seq_num == packet.id) {
-			printf("Client %d sent:\n", conn->id);
-			printf("%s", packet.char_seq);
+			if (!packet.init_conn) {
+				printf("Client %d sent:\n", conn->id);
+				printf("%s", packet.char_seq);
+			}
 			conn->exp_seq_num++;
 		} else {
 			log_print(LOG, "Expected id %d, got %d",
