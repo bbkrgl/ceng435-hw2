@@ -38,6 +38,7 @@ struct packet_t {
 
 struct packet_queue {
 	int size;
+	unsigned int last_sent;
 	struct packet_t *head;
 	struct packet_t *tail;
 };

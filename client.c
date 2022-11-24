@@ -20,6 +20,7 @@ void *send_packets(void *args)
 			int i = 0;
 			for (struct packet_t *head = queue.head;
 			     head && i < WINDOW_SIZE; head = head->next, i++) {
+				queue.last_sent = head->data.id;
 				if (head->acknowledged)
 					continue;
 				log_print(LOG, "Sending the packet %d in queue",
@@ -119,7 +120,7 @@ int main(int argc, char *argv[])
 		log_print(ERROR, "Cannot create thread, error no %s",
 			  strerror(err));
 
-	unsigned int exp_seq_num = 0;
+	unsigned int exp_seq_num = 1;
 	struct packet_data packet;
 	while (terminate < 2) {
 		struct sockaddr_storage server_addr;
@@ -144,13 +145,14 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
-		if (exp_seq_num == packet.id)
+		if (exp_seq_num == packet.id) {
 			printf("%s", packet.char_seq);
-		else
-			log_print(LOG, "Expected id %d, got %d",
-				  exp_seq_num, packet.id);
+			exp_seq_num++;
+		} else {
+			log_print(LOG, "Expected id %d, got %d", exp_seq_num,
+				  packet.id);
+		}
 
-		// TODO: Filter packets that have been acked before
 		struct packet_data ack;
 		ack.is_ack = 1;
 		ack.id = packet.id;
@@ -158,7 +160,7 @@ int main(int argc, char *argv[])
 		if ((ack_bytes = sendto(sockfd, &ack,
 					sizeof(struct packet_data), 0,
 					(struct sockaddr *)&server_addr,
-					server_addr_len) == -1))
+					server_addr_len)) == -1)
 			log_print(ERROR, "Cannot send packet");
 		log_print(LOG, "Sent ACK for packet %d", ack.id);
 	}

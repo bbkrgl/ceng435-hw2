@@ -19,13 +19,13 @@ void *send_packets(void *args)
 			int i = 0;
 			for (struct packet_t *head = conn->queue.head;
 			     head && i < WINDOW_SIZE; head = head->next, i++) {
+				conn->queue.last_sent = head->data.id;
 				if (head->acknowledged)
 					continue;
 				log_print(
 					LOG,
 					"Thread %d sending the packet %d in queue",
-					conn->id, head->data.char_seq,
-					head->data.id);
+					conn->id, head->data.id);
 				int bytes_sent = 0;
 				if ((bytes_sent = sendto(
 					     sockfd, &head->data,
@@ -78,11 +78,10 @@ void *read_input(void *args)
 int main(int argc, char *argv[])
 {
 	char *server_port = 0;
-	if (argc != 2) {
+	if (argc != 2)
 		log_print(ERROR, "Wrong argument count");
-	} else {
+	else
 		server_port = argv[1];
-	}
 
 	struct addrinfo hints;
 	struct addrinfo *res;
@@ -171,10 +170,10 @@ int main(int argc, char *argv[])
 			printf("%s", packet.char_seq);
 			conn->exp_seq_num++;
 		} else {
-			log_print(LOG, "Expected id %d, got %d", conn->exp_seq_num, packet.id);
+			log_print(LOG, "Expected id %d, got %d",
+				  conn->exp_seq_num, packet.id);
 		}
 
-		// TODO: Filter packets that have been acked before
 		struct packet_data ack;
 		ack.is_ack = 1;
 		ack.id = packet.id;

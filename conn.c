@@ -21,7 +21,7 @@ struct packet_t *add_packet(struct packet_queue *queue,
 	queue->size++;
 
 	if (!queue->head) {
-		new_elem->data.id = 0; // TODO: If empty, use exp_seq_num
+		new_elem->data.id = queue->last_sent + 1;
 		queue->head = queue->tail = new_elem;
 
 		return new_elem;
