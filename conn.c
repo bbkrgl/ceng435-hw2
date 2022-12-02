@@ -35,22 +35,26 @@ struct packet_t *add_packet(struct packet_queue *queue,
 	return new_elem;
 }
 
-void acknowledge_packet(struct packet_queue *queue, int id)
+void acknowledge_packet(struct packet_queue *queue, int id,
+			pthread_mutex_t *mutex)
 {
 	struct packet_t *packet;
+	pthread_mutex_lock(mutex);
 	if ((packet = find_packet(queue, id))) {
-		packet->acknowledged = 1;
-		if (queue->head == packet)
-			while (packet && packet->acknowledged) {
-				queue->head = packet->next;
-				if (packet->next)
-					packet->next->prev = NULL;
-				free(packet);
+		queue->head = packet->next;
+		if (packet->next) {
+			queue->head->prev = NULL;
 
-				packet = queue->head;
-				queue->size--;
+			struct packet_t *temp;
+			while (packet) {
+				temp = packet;
+				int id = packet->data.id;
+				packet = packet->prev;
+				free(temp);
 			}
+		}
 	}
+	pthread_mutex_unlock(mutex);
 }
 
 void free_queue(struct packet_queue *queue)

@@ -17,11 +17,10 @@ void *send_packets(void *args)
 	while (terminate < 2) {
 		while (conn->queue.size) {
 			int i = 0;
+			pthread_mutex_lock(&mutex);
 			for (struct packet_t *head = conn->queue.head;
 			     head && i < WINDOW_SIZE; head = head->next, i++) {
 				conn->queue.last_sent = head->data.id;
-				if (head->acknowledged)
-					continue;
 				log_print(
 					LOG,
 					"Thread %d sending the packet %d in queue",
@@ -36,10 +35,13 @@ void *send_packets(void *args)
 				log_print(LOG, "Sent %d bytes to client %d",
 					  bytes_sent, conn->id);
 			}
+			pthread_mutex_unlock(&mutex);
 			usleep(100000);
 		}
 
-		LOCK(pthread_cond_wait(&conn->cond, &mutex))
+		pthread_mutex_lock(&mutex);
+		pthread_cond_wait(&conn->cond, &mutex);
+		pthread_mutex_unlock(&mutex);
 	}
 
 	pthread_exit(EXIT_SUCCESS);
@@ -63,7 +65,9 @@ void *read_input(void *args)
 			memcpy(data.char_seq, line, line_len);
 			add_packet(&curr_conn->queue, &data);
 			if (curr_conn->queue.size == 1) {
-				LOCK(pthread_cond_signal(&curr_conn->cond))
+				pthread_mutex_lock(&mutex);
+				pthread_cond_signal(&curr_conn->cond);
+				pthread_mutex_unlock(&mutex);
 			}
 
 			terminate = 0;
@@ -161,7 +165,7 @@ int main(int argc, char *argv[])
 
 		if (packet.is_ack) {
 			log_print(LOG, "Received ACK for packet %d", packet.id);
-			acknowledge_packet(&conn->queue, packet.id);
+			acknowledge_packet(&conn->queue, packet.id - 1, &mutex);
 			continue;
 		}
 
@@ -171,21 +175,25 @@ int main(int argc, char *argv[])
 				printf("%s", packet.char_seq);
 			}
 			conn->exp_seq_num++;
+		}
+
+		if (conn->exp_seq_num > packet.id) {
+			struct packet_data ack;
+			ack.is_ack = 1;
+			ack.id = conn->exp_seq_num;
+			ack.init_conn = packet.init_conn;
+			int ack_bytes = 0;
+			if ((ack_bytes = sendto(sockfd, &ack,
+						sizeof(struct packet_data), 0,
+						&conn->target_addr,
+						conn->target_addr_len)) == -1)
+				log_print(ERROR, "Cannot send packet");
+			log_print(LOG, "Sent ACK for packet %d", ack.id);
+
 		} else {
 			log_print(LOG, "Expected id %d, got %d",
 				  conn->exp_seq_num, packet.id);
 		}
-
-		struct packet_data ack;
-		ack.is_ack = 1;
-		ack.id = packet.id;
-		ack.init_conn = packet.init_conn;
-		int ack_bytes = 0;
-		if ((ack_bytes = sendto(
-			     sockfd, &ack, sizeof(struct packet_data), 0,
-			     &conn->target_addr, conn->target_addr_len)) == -1)
-			log_print(ERROR, "Cannot send packet");
-		log_print(LOG, "Sent ACK for packet %d", ack.id);
 	}
 
 	close(sockfd);

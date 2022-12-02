@@ -30,7 +30,6 @@ struct packet_data {
 };
 
 struct packet_t {
-	char acknowledged;
 	struct packet_data data;
 	struct packet_t *next;
 	struct packet_t *prev;
@@ -46,7 +45,8 @@ struct packet_queue {
 struct packet_t *find_packet(struct packet_queue *queue, int id);
 struct packet_t *add_packet(struct packet_queue *queue,
 			    struct packet_data *data);
-void acknowledge_packet(struct packet_queue *queue, int id);
+void acknowledge_packet(struct packet_queue *queue, int id,
+			pthread_mutex_t *mutex);
 void free_queue(struct packet_queue *queue);
 
 struct connection_t {
