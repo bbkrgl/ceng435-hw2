@@ -1,3 +1,10 @@
+/**
+ * @file log.h
+ * @author Burak Köroğlu (e2448637@ceng.metu.edu.tr)
+ * @brief Log interface.
+ * 
+ */
+
 #ifndef __LOG__
 #define __LOG__
 
@@ -8,11 +15,24 @@
 #include <unistd.h>
 #include <string.h>
 
-/*
-* Header file for logging-error reporting
-*/
-
+/**
+ * @enum log_level
+ * 
+ * @brief This enumeration is used to determine the log level
+ * 
+ */
 enum log_level { LOG, ERROR };
+
+/**
+ * @brief Prints the log level, timestamp, process id and given formatted message for a given log level.
+ * 
+ * @details For `LOG` log level, the function just prints the given formatted message.
+ * For `ERROR` log level, the function print the given message and if the errno is set, prints the error message, stops the program.
+ * 
+ * @param level 
+ * @param logmsg 
+ * @param ... 
+ */
 void log_print(enum log_level level, const char *logmsg, ...)
 {
 	va_list args;

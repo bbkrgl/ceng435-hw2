@@ -1,23 +1,73 @@
+/**
+ * @file server.c
+ * @author Burak Köroğlu (e2448637@ceng.metu.edu.tr)
+ * @brief Server implementation
+ * 
+ */
+
 #include "conn.h"
 #include "log.h"
 
+/** Global variables for socket and termination */
 int sockfd = -1;
 int terminate = 0;
 
+/** Global mutex and current connection. Connection struct explanation in conn.h */
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 struct connection_t *curr_conn = 0;
 
+/**
+ * @brief Wait for signal or timeout
+ * 
+ * @param time 
+ */
+void wait_or_signal(long time)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+
+	ts.tv_sec += time / 1000;
+	long ns_left = (time % 1000) * 1000000;
+	long left_limit = 1000000000 - ts.tv_nsec;
+
+	if (ns_left > left_limit) {
+		ts.tv_sec++;
+		ts.tv_nsec = ns_left - left_limit;
+	} else {
+		ts.tv_nsec += ns_left;
+	}
+
+	pthread_mutex_lock(&curr_conn->timeout_mutex);
+	int res = pthread_cond_timedwait(&curr_conn->timeout_cond,
+					 &curr_conn->timeout_mutex, &ts);
+	if (res == ETIMEDOUT)
+		log_print(LOG, "Timed out, sending packages again");
+	else if (res)
+		log_print(ERROR, "Timed wait error");
+	pthread_mutex_unlock(&curr_conn->timeout_mutex);
+}
+
+/**
+ * @brief Thread function for sending packets.
+ * 
+ * @param args 
+ * @return void* 
+ */
 void *send_packets(void *args)
 {
+	/**  */
 	struct connection_t *conn = (struct connection_t *)args;
 
 	log_print(LOG, "Connection thread %d created, waiting for turn",
 		  conn->id);
 
+	/** Run until the program termination */
 	while (terminate < 2) {
 		while (conn->queue.size) {
 			int i = 0;
+			/** Get the lock to prevent the synchronization issues with the receiver thread acknowledge */
 			pthread_mutex_lock(&mutex);
+			/** Iterate over the queue until the end or window size */
 			for (struct packet_t *head = conn->queue.head;
 			     head && i < WINDOW_SIZE; head = head->next, i++) {
 				conn->queue.last_sent = head->data.id;
@@ -25,6 +75,7 @@ void *send_packets(void *args)
 					LOG,
 					"Thread %d sending the packet %d in queue",
 					conn->id, head->data.id);
+				/** Send packets to server. If there is an error, exit with error message */
 				int bytes_sent = 0;
 				if ((bytes_sent = sendto(
 					     sockfd, &head->data,
@@ -36,9 +87,12 @@ void *send_packets(void *args)
 					  bytes_sent, conn->id);
 			}
 			pthread_mutex_unlock(&mutex);
-			usleep(100000);
+
+			/** Wait 100ms for ack, if no ack then resend remaining packets */
+			wait_or_signal(100);
 		}
 
+		/** If the queue becomes empty, wait packets to be added to the queue */
 		pthread_mutex_lock(&mutex);
 		pthread_cond_wait(&conn->cond, &mutex);
 		pthread_mutex_unlock(&mutex);
@@ -47,16 +101,25 @@ void *send_packets(void *args)
 	pthread_exit(EXIT_SUCCESS);
 }
 
+/**
+ * @brief Thread for getting user input. Adds packets to the queue.
+ * 
+ * @param args 
+ * @return void* 
+ */
 void *read_input(void *args)
 {
 	char *line = 0;
 	size_t line_len = 0;
+	/** Run until the program termination */
 	while (terminate < 2) {
 		int num_read = getline(&line, &line_len, stdin);
+		/** Count the number of empty lines */
 		if (!num_read || !strcmp(line, "\n")) {
 			terminate++;
 		} else {
 			if (!curr_conn) {
+				/** If no connection, ignore */
 				log_print(LOG, "No connections exists");
 				continue;
 			}
@@ -65,6 +128,7 @@ void *read_input(void *args)
 			memcpy(data.char_seq, line, line_len);
 			add_packet(&curr_conn->queue, &data);
 			if (curr_conn->queue.size == 1) {
+				/** Send packets arrived signal to the send_packets thread */
 				pthread_mutex_lock(&mutex);
 				pthread_cond_signal(&curr_conn->cond);
 				pthread_mutex_unlock(&mutex);
@@ -81,11 +145,14 @@ void *read_input(void *args)
 
 int main(int argc, char *argv[])
 {
+	/** Get arguments */
 	char *server_port = 0;
 	if (argc != 2)
 		log_print(ERROR, "Wrong argument count");
 	else
 		server_port = argv[1];
+
+	/** Socket init-configuration start */
 
 	struct addrinfo hints;
 	struct addrinfo *res;
@@ -116,16 +183,22 @@ int main(int argc, char *argv[])
 	freeaddrinfo(res);
 	log_print(LOG, "Ready for connections");
 
+	/** Socket init-configuration end */
+
+	/** Create the input thread, main thread will listen for packets */
 	int err = 0;
 	pthread_t line_read_thread;
 	if ((err = pthread_create(&line_read_thread, 0, &read_input, 0)))
 		log_print(ERROR, "Cannot create thread, error no %s",
 			  strerror(err));
 
+	/** Initialize the connection list and helper variables */
 	struct connection_t *conn_list_head = 0;
 	struct connection_t *last_conn = 0;
 	struct packet_data packet;
+	/** Run until termination */
 	while (terminate < 2) {
+		/** Listen for packets */
 		struct sockaddr_storage client_addr;
 		socklen_t client_addr_len = sizeof(client_addr);
 
@@ -137,16 +210,19 @@ int main(int argc, char *argv[])
 			log_print(ERROR, "Cannot read from socket");
 		log_print(LOG, "%d bytes received", bytes_transmitted);
 
+		/** If a packet is received, look up for its source in the connection list. */
 		struct connection_t *conn = 0;
 		if (!(conn = find_connection(conn_list_head,
 					     (struct sockaddr *)&client_addr))) {
 			if (!packet.init_conn) {
+				/** If the source is unknown and not initiating, ignore */
 				log_print(
 					LOG,
 					"Packet from unknown origin, ignoring");
 				continue;
 			}
 
+			/** Initialize the connection by adding a new entry to the connection list */
 			last_conn = conn = add_connection(
 				last_conn, (struct sockaddr *)&client_addr,
 				client_addr_len);
@@ -156,6 +232,7 @@ int main(int argc, char *argv[])
 			if (!conn_list_head)
 				conn_list_head = curr_conn = last_conn;
 
+			/** Create the thread for that sends packets to this client */
 			if ((err = pthread_create(&last_conn->thread_id, 0,
 						  &send_packets, last_conn)))
 				log_print(ERROR,
@@ -163,12 +240,22 @@ int main(int argc, char *argv[])
 					  strerror(err));
 		}
 
+		/** Ack function explanation in conn.c */
 		if (packet.is_ack) {
 			log_print(LOG, "Received ACK for packet %d", packet.id);
-			acknowledge_packet(&conn->queue, packet.id - 1, &mutex);
+			int res = acknowledge_packet(&conn->queue,
+						     packet.id - 1, &mutex);
+			if (res != -1) {
+				/** Signal the next batch of packets in the queue to be sent */
+				pthread_mutex_lock(&conn->timeout_mutex);
+				pthread_cond_signal(&conn->timeout_cond);
+				pthread_mutex_unlock(&conn->timeout_mutex);
+			}
+			/** Since we just got an ack, continue */
 			continue;
 		}
 
+		/** If the packet is not an ack and has the expected sequence number, print it */
 		if (conn->exp_seq_num == packet.id) {
 			if (!packet.init_conn) {
 				printf("Client %d sent:\n", conn->id);
@@ -177,10 +264,11 @@ int main(int argc, char *argv[])
 			conn->exp_seq_num++;
 		}
 
+		/** Send cumulative ack for the packet */
 		if (conn->exp_seq_num > packet.id) {
 			struct packet_data ack;
 			ack.is_ack = 1;
-			ack.id = conn->exp_seq_num;
+			ack.id = conn->exp_seq_num; /** Cumulative ack */
 			ack.init_conn = packet.init_conn;
 			int ack_bytes = 0;
 			if ((ack_bytes = sendto(sockfd, &ack,
