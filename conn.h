@@ -8,35 +8,40 @@
 #ifndef __CONN__
 #define __CONN__
 
-#include <pthread.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <string.h>
-#include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <netdb.h>
-#include <sys/wait.h>
-#include <fcntl.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 /** Set window size and char buffer size */
 #define WINDOW_SIZE 16
-#define BUFFER_SIZE 9
+#define PAYLOAD_SIZE 9
 
 /**
  * @struct packet_data
  * 
- * @brief Packet structure. Has fields for marking ack and init. id is the sequence number.
+ * @brief Packet structure. Has fields for marking ack, init and termination. seq_num is the sequence number.
  * 
  */
 struct packet_data {
-	char char_seq[BUFFER_SIZE];
+	/** Payload */
+	char char_seq[PAYLOAD_SIZE];
+	/** Set if the packet is ack */
 	char is_ack;
+	/** Set if the packet is initializing a connection */
 	char init_conn;
+	/** Set if the packet is terminating a connection */
 	char terminate_conn;
-	unsigned int id;
+	/** Sequence number
+	 * In this implementation the sequence number directly shows the packet number,
+	 * since the packet size does not change and would be incremented with the same number every time. */
+	unsigned int seq_num;
 };
 
 /**
@@ -74,10 +79,10 @@ struct packet_queue {
 };
 
 /** These functions will be explained in conn.c */
-struct packet_t *find_packet(struct packet_queue *queue, int id);
+struct packet_t *find_packet(struct packet_queue *queue, int seq_num);
 struct packet_t *add_packet(struct packet_queue *queue,
 			    struct packet_data *data);
-int acknowledge_packet(struct packet_queue *queue, int id,
+int acknowledge_packet(struct packet_queue *queue, int seq_num,
 		       pthread_mutex_t *mutex);
 void free_queue(struct packet_queue *queue);
 

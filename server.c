@@ -9,12 +9,16 @@
 #include "log.h"
 
 /** Global variables for socket and active connections */
+/** Socket file descriptor */
 int sockfd = -1;
+/** Num of active connections */
 int active_conn = 0;
+/** Termination variable. When set, shows that the program is in termination sequence */
 char terminate = 0;
 
-/** Global mutex and current connection. Connection struct explanation in conn.h */
+/** Global mutex */
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+/** Current connection. connection_t explanation in conn.h */
 struct connection_t *curr_conn = 0;
 
 /**
@@ -56,7 +60,7 @@ void wait_or_signal(long time)
  */
 void *send_packets(void *args)
 {
-	/**  */
+	/** Get the connection which is associated with this thread */
 	struct connection_t *conn = (struct connection_t *)args;
 
 	log_print(LOG, "Connection thread %d created, waiting for turn",
@@ -71,11 +75,14 @@ void *send_packets(void *args)
 			/** Iterate over the queue until the end or window size */
 			for (struct packet_t *head = conn->queue.head;
 			     head && i < WINDOW_SIZE; head = head->next, i++) {
-				conn->queue.last_sent = head->data.id;
+				/** Set last sent as the sequence number, this will eventually be equal to the last sent in the window.
+				 * No duplicate sequence numbers occur using this var because all threads using this var is locked.
+				 */
+				conn->queue.last_sent = head->data.seq_num;
 				log_print(
 					LOG,
 					"Thread %d sending the packet %d in queue",
-					conn->id, head->data.id);
+					conn->id, head->data.seq_num);
 				/** Send packets to server. If there is an error, exit with error message */
 				int bytes_sent = 0;
 				if ((bytes_sent = sendto(
@@ -89,7 +96,10 @@ void *send_packets(void *args)
 			}
 			pthread_mutex_unlock(&mutex);
 
-			/** Wait 100ms for ack, if no ack then resend remaining packets */
+			/** Wait 100ms or or ack signal.
+			 * If continues with a signal, it is guaranteed that some packets are acked and evicted from the queue,
+			 * meaning that the window slided.
+			 */
 			wait_or_signal(100);
 		}
 
@@ -113,7 +123,9 @@ void *read_input(void *args)
 	char terminate_read = 0;
 	char *line = 0;
 	size_t line_len = 0;
-	/** Run until the program termination */
+	/** Run until the program termination 
+	 * Conditions for this thread is to have two or more blank lines or being in the termination sequence
+	 */
 	while (terminate_read < 2 && !terminate) {
 		int num_read = getline(&line, &line_len, stdin);
 		/** Count the number of empty lines */
@@ -128,13 +140,17 @@ void *read_input(void *args)
 				continue;
 			}
 
+			/** Get the actual line length */
 			line_len = strlen(line);
-			for (int i = 0; i < line_len; i += BUFFER_SIZE) {
+			/** Divide the line into packets.
+			 * Iterate over all segments and copy PAYLOAD_SIZE sized data to packet data.
+			 */
+			for (int i = 0; i < line_len; i += PAYLOAD_SIZE) {
 				struct packet_data data;
-				memset(data.char_seq, '\0', BUFFER_SIZE);
-				if (i + BUFFER_SIZE < line_len)
+				memset(data.char_seq, '\0', PAYLOAD_SIZE);
+				if (i + PAYLOAD_SIZE < line_len)
 					strncpy(data.char_seq, line + i,
-						BUFFER_SIZE);
+						PAYLOAD_SIZE);
 				else
 					strncpy(data.char_seq, line + i,
 						line_len - i);
@@ -154,7 +170,7 @@ void *read_input(void *args)
 	}
 
 	log_print(LOG, "Starting termination");
-	/** For all connections, add termination packet to all queues */
+	/** If consecutive enters are read, add termination packet to all queues */
 	struct connection_t *conn = curr_conn;
 	while (conn) {
 		struct packet_data term;
@@ -246,7 +262,9 @@ int main(int argc, char *argv[])
 		struct sockaddr_storage client_addr;
 		socklen_t client_addr_len = sizeof(client_addr);
 
-		/** If in termination sequence, set the socket timeout to 1s */
+		/** If in termination sequence, set the socket timeout to 1s.
+		 * Wait for 1s for packets and if no packets arrive, terminate.
+		 */
 		if (terminate) {
 			struct timeval tv;
 			tv.tv_sec = 1;
@@ -265,7 +283,7 @@ int main(int argc, char *argv[])
 		    !terminate) {
 			log_print(ERROR, "Cannot read from socket");
 		} else if (bytes_transmitted == -1) {
-			/** No packets arrived since the last 1s, assuming the ack is arrived */
+			/** No packets arrived since the last 1s, assuming the ack is arrived to the client. */
 			log_print(LOG, "No connections left, exiting");
 			exit(0);
 		}
@@ -309,17 +327,20 @@ int main(int argc, char *argv[])
 					  strerror(err));
 		}
 
-		/** Ack function explanation in conn.c */
+		/** Ack function (acknowledge_packet) explanation in conn.c */
 		if (packet.is_ack) {
-			log_print(LOG, "Received ACK for packet %d", packet.id);
+			log_print(LOG, "Received ACK for packet %d",
+				  packet.seq_num);
+			/** If termination packet got an ack, end the program */
 			if (packet.terminate_conn && conn->is_active) {
+				/** Decrement and mark connection as not active. */
 				conn->is_active = 0;
 				active_conn--;
 				continue;
 			}
 
-			int res = acknowledge_packet(&conn->queue,
-						     packet.id - 1, &mutex);
+			int res = acknowledge_packet(
+				&conn->queue, packet.seq_num - 1, &mutex);
 			if (res != -1) {
 				/** Signal the next batch of packets in the queue to be sent */
 				pthread_mutex_lock(&conn->timeout_mutex);
@@ -331,27 +352,27 @@ int main(int argc, char *argv[])
 		}
 
 		/** If the packet is not an ack and has the expected sequence number, print it */
-		if (conn->exp_seq_num == packet.id) {
+		if (conn->exp_seq_num == packet.seq_num) {
 			if (!packet.init_conn)
 				printf("%s", packet.char_seq);
 			conn->exp_seq_num++;
 		}
 
 		/** Send cumulative ack for the packet */
-		if (conn->exp_seq_num > packet.id) {
+		if (conn->exp_seq_num > packet.seq_num) {
 			struct packet_data ack;
 			ack.is_ack = 1;
-			ack.id = conn->exp_seq_num; /** Cumulative ack */
+			ack.seq_num = conn->exp_seq_num; /** Cumulative ack */
 			ack.init_conn = packet.init_conn;
 			ack.terminate_conn = packet.terminate_conn;
 			if (packet.terminate_conn) {
-				/** Do not exit right away if the last connection, wait for 1s timeout */
-				if (active_conn != 1)
-					active_conn--;
-				conn->is_active = 0;
-				/** Enter the termination sequence if the last connection */
+				/** Initiate termination sequence if the last connection has closed */
 				if (active_conn == 1)
 					terminate = 1;
+				else
+					active_conn--;
+				/** Mark the packet as not active */
+				conn->is_active = 0;
 			}
 			int ack_bytes = 0;
 			if ((ack_bytes = sendto(sockfd, &ack,
@@ -359,10 +380,10 @@ int main(int argc, char *argv[])
 						&conn->target_addr,
 						conn->target_addr_len)) == -1)
 				log_print(ERROR, "Cannot send packet");
-			log_print(LOG, "Sent ACK for packet %d", ack.id);
+			log_print(LOG, "Sent ACK for packet %d", ack.seq_num);
 		} else {
-			log_print(LOG, "Expected id %d, got %d",
-				  conn->exp_seq_num, packet.id);
+			log_print(LOG, "Expected seq_num %d, got %d",
+				  conn->exp_seq_num, packet.seq_num);
 		}
 	}
 

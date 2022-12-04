@@ -8,17 +8,17 @@
 #include "conn.h"
 
 /**
- * @brief Finds and returns the packet with the given id (sequence number) in the given queue. If not found, returns NULL.
+ * @brief Finds and returns the packet with the given seq_num in the given queue. If not found, returns NULL.
  * 
  * @param queue 
- * @param id 
+ * @param seq_num 
  * @return struct packet_t* 
  */
-struct packet_t *find_packet(struct packet_queue *queue, int id)
+struct packet_t *find_packet(struct packet_queue *queue, int seq_num)
 {
 	struct packet_t *packet = queue->head;
 	while (packet) {
-		if (packet->data.id == id)
+		if (packet->data.seq_num == seq_num)
 			break;
 		packet = packet->next;
 	}
@@ -27,7 +27,7 @@ struct packet_t *find_packet(struct packet_queue *queue, int id)
 }
 
 /**
- * @brief Adds and returns the given packet data to the given queue. Id is filled from this function.
+ * @brief Adds and returns the given packet data to the given queue. Sequence number is filled from this function.
  * 
  * @param queue 
  * @param data 
@@ -44,14 +44,14 @@ struct packet_t *add_packet(struct packet_queue *queue,
 	queue->size++;
 
 	if (!queue->head) {
-		new_elem->data.id = queue->last_sent + 1;
+		new_elem->data.seq_num = queue->last_sent + 1;
 		queue->head = queue->tail = new_elem;
 
 		pthread_mutex_unlock(&queue->mutex);
 		return new_elem;
 	}
 
-	new_elem->data.id = queue->tail->data.id + 1;
+	new_elem->data.seq_num = queue->tail->data.seq_num + 1;
 	queue->tail->next = new_elem;
 	new_elem->prev = queue->tail;
 	queue->tail = new_elem;
@@ -61,17 +61,18 @@ struct packet_t *add_packet(struct packet_queue *queue,
 }
 
 /**
- * @brief Evicts the packets before the given id (sequence number) and returns the id from the given queue. If the packet is not found, returns -1.
+ * @brief Evicts the packets before the given sequence number and returns the it from the given queue. If the packet is not found, returns -1.
  * 
  * @details In this implementation, eviction means ack, as it will not be sent again.
  * This function also ignores the duplicate acks from older packets implicitly as all such will be evicted.
+ * Window sliding happens through poping all acked from the queue.
  * 
  * @param queue 
- * @param id 
+ * @param seq_num 
  * @param mutex 
  * @return int 
  */
-int acknowledge_packet(struct packet_queue *queue, int id,
+int acknowledge_packet(struct packet_queue *queue, int seq_num,
 		       pthread_mutex_t *mutex)
 {
 	struct packet_t *packet;
@@ -79,9 +80,9 @@ int acknowledge_packet(struct packet_queue *queue, int id,
 	pthread_mutex_lock(mutex);
 	/** Get another lock to prevent data race with the input thread */
 	pthread_mutex_lock(&queue->mutex);
-	/** Find the packet with given id (sequence number)
+	/** Find the packet with given sequence number
 	 * Iterate through all packets before the packet and evict them as they are acknowledged */
-	if ((packet = find_packet(queue, id))) {
+	if ((packet = find_packet(queue, seq_num))) {
 		queue->head = packet->next;
 		if (packet->next) {
 			queue->head->prev = NULL;
@@ -101,7 +102,7 @@ int acknowledge_packet(struct packet_queue *queue, int id,
 
 		pthread_mutex_unlock(&queue->mutex);
 		pthread_mutex_unlock(mutex);
-		return id;
+		return seq_num;
 	}
 
 	pthread_mutex_unlock(&queue->mutex);
