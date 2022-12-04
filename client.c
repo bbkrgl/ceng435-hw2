@@ -8,15 +8,15 @@
 #include "conn.h"
 #include "log.h"
 
-/** Mutex and conditions for sender, receiver and input thread synchronization */
+/** Mutex and conditions for sender and receiver thread synchronization */
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
-/** Mutex and conditions for sender, receiver and input thread synchronization */
+/** Mutex and conditions setting timeout */
 pthread_mutex_t timeout_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t timeout_cond = PTHREAD_COND_INITIALIZER;
 
-/** Packet queue, packets that will be sent. Detailed explanation of queueing is in conn.h */
+/** Packet queue; packets that will be sent. Detailed explanation of queueing is in conn.h */
 struct packet_queue queue;
 
 /** Global variables for socket, connection control and termination */
@@ -67,7 +67,7 @@ void *send_packets(void *args)
 	struct addrinfo *target = *((struct addrinfo **)args);
 
 	/** Run until the program termination */
-	while (terminate < 2) {
+	while (1) {
 		while (queue.size) {
 			int i = 0;
 			/** Get the lock to prevent the synchronization issues with the receiver thread acknowledge */
@@ -113,17 +113,18 @@ void *send_packets(void *args)
 void *read_input(void *args)
 {
 	char init = 0;
+	char terminate_read = 0;
 
 	char *line = 0;
 	size_t line_len = 0;
 	/** Run until the program termination */
-	while (terminate < 2) {
+	while (terminate_read < 2 && !terminate) {
 		int num_read = getline(&line, &line_len, stdin);
 		/** Count the number of empty lines */
 		if (!num_read || !strcmp(line, "\n")) {
-			terminate++;
+			terminate_read++;
 		} else {
-			terminate = 0;
+			terminate_read = 0;
 			struct packet_data data;
 			memcpy(data.char_seq, line, line_len);
 			add_packet(&queue, &data);
@@ -139,7 +140,18 @@ void *read_input(void *args)
 		}
 	}
 
-	terminate = 2;
+	/** If triple consecutive enters are read, send termination packet */
+	log_print(LOG, "Starting termination");
+	struct packet_data term;
+	term.terminate_conn = 1;
+	free_queue(&queue); /** Flush remaining elements */
+	add_packet(&queue, &term);
+
+	/** Send signal again if sending thread is waiting */
+	pthread_mutex_lock(&mutex);
+	pthread_cond_signal(&cond);
+	pthread_mutex_unlock(&mutex);
+
 	free(line);
 	pthread_exit(EXIT_SUCCESS);
 }
@@ -182,11 +194,15 @@ int main(int argc, char *argv[])
 
 	/** Socket init-configuration end */
 
+	/** Initialize the queue */
+	pthread_mutex_init(&queue.mutex, NULL);
+
 	/** Initialization packet. This packet is added to the queue */
 	struct packet_data init;
 	init.init_conn = 1;
 	init.is_ack = 0;
 	init.id = 0;
+	init.terminate_conn = 0;
 	add_packet(&queue, &init);
 
 	/** Create the input and send threads, main thread will listen for packets */
@@ -202,17 +218,34 @@ int main(int argc, char *argv[])
 	unsigned int exp_seq_num = 1;
 	struct packet_data packet;
 	/** Run until termination */
-	while (terminate < 2) {
-		/** Listen for packets */
+	while (1) {
 		struct sockaddr_storage server_addr;
 		socklen_t server_addr_len = sizeof(server_addr);
 
+		/** If in termination sequence, set the socket timeout to 1s */
+		if (terminate) {
+			struct timeval tv;
+			tv.tv_sec = 1;
+			tv.tv_usec = 0;
+			if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv,
+				       sizeof(tv)) == -1)
+				log_print(ERROR, "Cannot set timeout");
+		}
+
+		/** Wait for packets */
 		int bytes_transmitted = 0;
 		if ((bytes_transmitted = recvfrom(
 			     sockfd, &packet, sizeof(struct packet_data), 0,
 			     (struct sockaddr *)&server_addr,
-			     &server_addr_len)) == -1)
+			     &server_addr_len)) == -1 &&
+		    !terminate) {
 			log_print(ERROR, "Cannot read from socket");
+		} else if (bytes_transmitted == -1) {
+			/** No packets arrived since the last 1s, assuming the ack is arrived */
+			log_print(LOG, "No packets since the last 1s, exiting");
+			exit(0);
+		}
+
 		log_print(LOG, "%d bytes received", bytes_transmitted);
 
 		/** Mark the connection as established with the response from server */
@@ -224,6 +257,11 @@ int main(int argc, char *argv[])
 		/** Ack function explanation in conn.c */
 		if (packet.is_ack) {
 			log_print(LOG, "Received ACK for packet %d", packet.id);
+			if (packet.terminate_conn) {
+				/** Connection is closed, can safely exit now */
+				log_print(LOG, "Connection closed, exiting");
+				exit(0);
+			}
 			int res = acknowledge_packet(&queue, packet.id - 1,
 						     &mutex);
 			if (res != -1) {
@@ -232,7 +270,7 @@ int main(int argc, char *argv[])
 				pthread_cond_signal(&timeout_cond);
 				pthread_mutex_unlock(&timeout_mutex);
 			}
-			/** Since we just got an ack, continue */
+			/** Since we just got an ack, continue*/
 			continue;
 		}
 
@@ -250,6 +288,10 @@ int main(int argc, char *argv[])
 			ack.is_ack = 1;
 			ack.id = exp_seq_num; /** Cumulative ack */
 			ack.init_conn = packet.init_conn;
+			ack.terminate_conn = packet.terminate_conn;
+			/** Enter the termination sequence */
+			if (packet.terminate_conn)
+				terminate = 1;
 			int ack_bytes = 0;
 			if ((ack_bytes = sendto(sockfd, &ack,
 						sizeof(struct packet_data), 0,

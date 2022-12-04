@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 
 /** Set window size and char buffer size */
 #define WINDOW_SIZE 16
@@ -33,6 +34,7 @@
 struct packet_data {
 	char is_ack;
 	char init_conn;
+	char terminate_conn;
 	unsigned int id;
 	char char_seq[BUFFER_SIZE];
 };
@@ -64,6 +66,8 @@ struct packet_queue {
 	int size;
 	/** Last sent sequence number. Used to determine the seq. number if the queue is empty. */
 	unsigned int last_sent;
+	/** Queue mutex */
+	pthread_mutex_t mutex;
 	/** First and last elements of the queue */
 	struct packet_t *head;
 	struct packet_t *tail;
@@ -87,6 +91,8 @@ void free_queue(struct packet_queue *queue);
  * 
  */
 struct connection_t {
+	/** Is the connection active */
+	char is_active;
 	/** Connection id*/
 	int id;
 	/** Sequence number that the connection expects */

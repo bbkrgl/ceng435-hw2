@@ -36,6 +36,8 @@ struct packet_t *find_packet(struct packet_queue *queue, int id)
 struct packet_t *add_packet(struct packet_queue *queue,
 			    struct packet_data *data)
 {
+	/** Get a lock to prevent data race with input thread */
+	pthread_mutex_lock(&queue->mutex);
 	struct packet_t *new_elem = calloc(1, sizeof(struct packet_t));
 	new_elem->data = *data;
 	new_elem->next = new_elem->prev = NULL;
@@ -45,6 +47,7 @@ struct packet_t *add_packet(struct packet_queue *queue,
 		new_elem->data.id = queue->last_sent + 1;
 		queue->head = queue->tail = new_elem;
 
+		pthread_mutex_unlock(&queue->mutex);
 		return new_elem;
 	}
 
@@ -52,6 +55,7 @@ struct packet_t *add_packet(struct packet_queue *queue,
 	queue->tail->next = new_elem;
 	new_elem->prev = queue->tail;
 	queue->tail = new_elem;
+	pthread_mutex_unlock(&queue->mutex);
 
 	return new_elem;
 }
@@ -73,6 +77,8 @@ int acknowledge_packet(struct packet_queue *queue, int id,
 	struct packet_t *packet;
 	/** Get the lock to prevent the synchronization issues with sending thread */
 	pthread_mutex_lock(mutex);
+	/** Get another lock to prevent data race with the input thread */
+	pthread_mutex_lock(&queue->mutex);
 	/** Find the packet with given id (sequence number)
 	 * Iterate through all packets before the packet and evict them as they are acknowledged */
 	if ((packet = find_packet(queue, id))) {
@@ -94,10 +100,12 @@ int acknowledge_packet(struct packet_queue *queue, int id,
 			queue->size = 0;
 		}
 
+		pthread_mutex_unlock(&queue->mutex);
 		pthread_mutex_unlock(mutex);
 		return id;
 	}
 
+	pthread_mutex_unlock(&queue->mutex);
 	pthread_mutex_unlock(mutex);
 	return -1;
 }
@@ -109,6 +117,8 @@ int acknowledge_packet(struct packet_queue *queue, int id,
  */
 void free_queue(struct packet_queue *queue)
 {
+	/** Lock the queue to prevent data race */
+	pthread_mutex_lock(&queue->mutex);
 	struct packet_t *last = queue->tail;
 	struct packet_t *temp;
 	while (last) {
@@ -116,6 +126,10 @@ void free_queue(struct packet_queue *queue)
 		last = last->prev;
 		free(temp);
 	}
+
+	queue->size = 0;
+	queue->head = queue->tail = NULL;
+	pthread_mutex_unlock(&queue->mutex);
 }
 
 /**
@@ -154,7 +168,9 @@ struct connection_t *add_connection(struct connection_t *list,
 	pthread_cond_init(&new_elem->cond, NULL);
 	pthread_cond_init(&new_elem->timeout_cond, NULL);
 	pthread_mutex_init(&new_elem->timeout_mutex, NULL);
+	pthread_mutex_init(&new_elem->queue.mutex, NULL);
 	new_elem->next = new_elem->prev = NULL;
+	new_elem->is_active = 1;
 
 	if (!list) {
 		new_elem->id = 0;
