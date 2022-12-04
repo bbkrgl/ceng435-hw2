@@ -33,12 +33,11 @@
  */
 struct packet_data {
 	char char_seq[BUFFER_SIZE];
-	unsigned int id;
 	char is_ack;
 	char init_conn;
 	char terminate_conn;
-} __attribute__((
-	packed)); /** Disable alignment to match the 16 byte requirement */
+	unsigned int id;
+};
 
 /**
  * @struct packet_t
