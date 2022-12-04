@@ -23,7 +23,7 @@
 
 /** Set window size and char buffer size */
 #define WINDOW_SIZE 16
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 1024
 
 /**
  * @struct packet_data

@@ -335,7 +335,9 @@ int main(int argc, char *argv[])
 			ack.init_conn = packet.init_conn;
 			ack.terminate_conn = packet.terminate_conn;
 			if (packet.terminate_conn) {
-				active_conn--;
+				/** Do not exit right away if the last connection, wait for 1s timeout */
+				if (active_conn != 1)
+					active_conn--;
 				conn->is_active = 0;
 				/** Enter the termination sequence if the last connection */
 				if (active_conn == 1)
