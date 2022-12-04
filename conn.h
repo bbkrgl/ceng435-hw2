@@ -23,7 +23,7 @@
 
 /** Set window size and char buffer size */
 #define WINDOW_SIZE 16
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 9
 
 /**
  * @struct packet_data
@@ -32,12 +32,13 @@
  * 
  */
 struct packet_data {
+	char char_seq[BUFFER_SIZE];
+	unsigned int id;
 	char is_ack;
 	char init_conn;
 	char terminate_conn;
-	unsigned int id;
-	char char_seq[BUFFER_SIZE];
-};
+} __attribute__((
+	packed)); /** Disable alignment to match the 16 byte requirement */
 
 /**
  * @struct packet_t

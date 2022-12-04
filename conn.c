@@ -90,7 +90,6 @@ int acknowledge_packet(struct packet_queue *queue, int id,
 			while (packet) {
 				queue->size--;
 				temp = packet;
-				int id = packet->data.id;
 				packet = packet->prev;
 				free(temp);
 			}

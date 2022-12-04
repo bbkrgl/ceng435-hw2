@@ -125,12 +125,20 @@ void *read_input(void *args)
 			terminate_read++;
 		} else {
 			terminate_read = 0;
-			struct packet_data data;
-			memcpy(data.char_seq, line, line_len);
-			add_packet(&queue, &data);
-			log_print(LOG, "Adding %s to data", line);
-			if (connection_exists &&
-			    (queue.size == 1 || (!init && queue.size >= 1))) {
+			line_len = strlen(line);
+			for (int i = 0; i < line_len; i += BUFFER_SIZE) {
+				struct packet_data data;
+				memset(data.char_seq, '\0', BUFFER_SIZE);
+				if (i + BUFFER_SIZE < line_len)
+					strncpy(data.char_seq, line + i,
+						BUFFER_SIZE);
+				else
+					strncpy(data.char_seq, line + i,
+						line_len - i);
+				add_packet(&queue, &data);
+				log_print(LOG, "Adding %s to data", line + i);
+			}
+			if (connection_exists && queue.size >= 1) {
 				/** Send packets arrived signal to the send_packets thread */
 				pthread_mutex_lock(&mutex);
 				pthread_cond_signal(&cond);
@@ -138,6 +146,9 @@ void *read_input(void *args)
 				init = 1;
 			}
 		}
+		free(line);
+		line = 0;
+		line_len = 0;
 	}
 
 	/** If triple consecutive enters are read, send termination packet */
@@ -152,7 +163,6 @@ void *read_input(void *args)
 	pthread_cond_signal(&cond);
 	pthread_mutex_unlock(&mutex);
 
-	free(line);
 	pthread_exit(EXIT_SUCCESS);
 }
 

@@ -128,16 +128,29 @@ void *read_input(void *args)
 				continue;
 			}
 
-			struct packet_data data;
-			memcpy(data.char_seq, line, line_len);
-			add_packet(&curr_conn->queue, &data);
-			if (curr_conn->queue.size == 1) {
+			line_len = strlen(line);
+			for (int i = 0; i < line_len; i += BUFFER_SIZE) {
+				struct packet_data data;
+				memset(data.char_seq, '\0', BUFFER_SIZE);
+				if (i + BUFFER_SIZE < line_len)
+					strncpy(data.char_seq, line + i,
+						BUFFER_SIZE);
+				else
+					strncpy(data.char_seq, line + i,
+						line_len - i);
+				add_packet(&curr_conn->queue, &data);
+				log_print(LOG, "Adding %s to data", line + i);
+			}
+			if (curr_conn->queue.size >= 1) {
 				/** Send packets arrived signal to the send_packets thread */
 				pthread_mutex_lock(&mutex);
 				pthread_cond_signal(&curr_conn->cond);
 				pthread_mutex_unlock(&mutex);
 			}
 		}
+		free(line);
+		line = 0;
+		line_len = 0;
 	}
 
 	log_print(LOG, "Starting termination");
@@ -171,7 +184,6 @@ void *read_input(void *args)
 		conn = conn->prev; /** For connections before the current connection */
 	}
 
-	free(line);
 	pthread_exit(EXIT_SUCCESS);
 }
 
@@ -320,10 +332,8 @@ int main(int argc, char *argv[])
 
 		/** If the packet is not an ack and has the expected sequence number, print it */
 		if (conn->exp_seq_num == packet.id) {
-			if (!packet.init_conn) {
-				printf("Client %d sent:\n", conn->id);
+			if (!packet.init_conn)
 				printf("%s", packet.char_seq);
-			}
 			conn->exp_seq_num++;
 		}
 
