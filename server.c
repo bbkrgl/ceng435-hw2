@@ -208,7 +208,7 @@ int main(int argc, char *argv[])
 	/** Get arguments */
 	char *server_port = 0;
 	if (argc != 2)
-		log_print(ERROR, "Wrong argument count");
+		log_print(ERROR, "Wrong argument count\nUsage: <server-port>");
 	else
 		server_port = argv[1];
 
